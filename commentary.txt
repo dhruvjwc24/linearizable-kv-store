@@ -1,0 +1,31 @@
+Project 1 Commentary:
+
+1: List the purpose for each goroutine you create in your project, and
+describe when it is created.
+
+I created two goroutines in this project. The first owns the key value map store and the
+other owns disk access. The map-owner can be accessed through two channels: readChan and
+reconciliationChan. The disk owner singularly handles write requests, in the form of PUTs
+and APPENDs. The reason we use two goroutines is because disk writes are relatively very
+slow compared to reads, so we don't want reads to be blocked by writes. That's why writes
+get a completely different "worker sandbox" to work under. Both goroutines are defined
+within initKVImpl(). This function is ran when the server is first initialized. This is
+necessary because it allows for the server to be constantly listening for requests from
+clients using the an unbounded for loop that only returns upon server termination.
+
+2: How do your goroutines communicate with one another?
+
+The inter-goroutine communication needs to occur either when APPENDs happen or when new
+data gets written (to the disk) that needs to be reconciled with the kvMap. For APPENDs, 
+this happens because APPENDs require a GET operation; that request is sent through 
+readChan, which is owned by the map-owner goroutine. The other time it happens is when 
+the disk state is inconsistent with the kvMap. So, the updated state is sent to be
+reconciled through the reconciliationChan channel. 
+
+3: How do you gaurantee that all created goroutines terminte when your
+server is shut down?
+
+The way I guarantee that created goroutines terminate when the server is shut down is by
+adding a case (<-kvs.terminated) in both goroutines. The instant KVServer.kill() method 
+runs, the kvs.terminated channel is closed, which allows the cases in both goroutines to
+be entered, which just return immediately.

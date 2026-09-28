@@ -5,9 +5,9 @@ type KVImpl struct {
 	kvMap map[string]string
 	opMap map[string]Pair
 
-	readChan              chan ReadReq
-	writeChan             chan WriteReq
-	reconciliationChannel chan ReconciliationReq
+	readChan           chan ReadReq
+	writeChan          chan WriteReq
+	reconciliationChan chan ReconciliationReq
 }
 
 // define a pair strucut for opMap
@@ -33,12 +33,31 @@ type ReconciliationReq struct {
 }
 
 func (kvs *KVServer) initKVImpl() {
+	/*
+		General Design Flow:
+		We have two goroutines acting as state owners. One strictly touches
+		the "disk" (if there were to exist one). The other map-owner
+		explicitly owns the key value store (aka the in-memory cache).
+		When a PUT/APPEND request comes in, it releases the request into
+		writeChan, and the disk-owner has a writeChan listener waiting to
+		acquire the any requests traveling over the unbuffered channel.
+		In that goroutine, the sequence number of the request is checked to
+		see if it is a retry request. If so, the cachedReply from the opMap
+		is just sent to the client. If it is truly a new operation, the
+		request is sent to the disk, which (for the purposes of this project
+		is just a delay simulating the extra time disk access takes). Once
+		that delay elapses, the new kv pair is sent to be reconciled through
+		the reconciliationChan, which routes into the map-owner goroutine.
+		On the other hand, for a GET request, that is mapped directly into
+		the map-owner goroutine over the readChan channel.
+	*/
+
 	kvs.impl.kvMap = make(map[string]string)
 	kvs.impl.opMap = make(map[string]Pair)
 
 	kvs.impl.readChan = make(chan ReadReq)
 	kvs.impl.writeChan = make(chan WriteReq)
-	kvs.impl.reconciliationChannel = make(chan ReconciliationReq)
+	kvs.impl.reconciliationChan = make(chan ReconciliationReq)
 
 	// define map-owner goroutine
 	go func() {
@@ -58,11 +77,11 @@ func (kvs *KVServer) initKVImpl() {
 
 			/*
 				case where there is an incoming req from
-				reconciliationChannel (i.e. a write to disk has been
+				reconciliationChan (i.e. a write to disk has been
 				performed and that disk state is being reconciled
 				with in-memory cache, or kvMap)
 			*/
-			case req := <-kvs.impl.reconciliationChannel: // req is type ReconciliationReq
+			case req := <-kvs.impl.reconciliationChan: // req is type ReconciliationReq
 				kvs.impl.kvMap[req.key] = req.value
 				req.reply <- OpReply{OK, req.value}
 
@@ -111,7 +130,7 @@ func (kvs *KVServer) initKVImpl() {
 
 					// reconcile with kvMap
 					done := make(chan OpReply)
-					kvs.impl.reconciliationChannel <- ReconciliationReq{key: key, value: value, reply: done}
+					kvs.impl.reconciliationChan <- ReconciliationReq{key: key, value: value, reply: done}
 					<-done
 
 					req.reply <- mapEntry.cachedReply
